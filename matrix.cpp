@@ -1,6 +1,8 @@
 #include <iostream>
 #include <vector>
 #include <stdexcept>
+#include <cmath>
+#include <algorithm>
 
 using std::cout;
 using std::endl;
@@ -11,7 +13,7 @@ private:
     int rows;
     int cols;
     vector<vector<double>> data; //matrix data
-public:
+public: 
     Matrix(int r, int c) : rows(r), cols(c) {
         //Initialize matrix with zero first
         data.resize(rows, vector<double>(cols, 0.0));
@@ -256,7 +258,10 @@ Matrix rref() const {
             if (std::abs(res.data[k][c]) > std::abs(res.data[pivotRow][c])) pivotRow = k;
         }
         //if column is nearly zero, skip to the next column
-        if (std::abs(res.data[pivotRow][c]) < 1e-12) continue;
+        if (std::abs(res.data[pivotRow][c]) < 1e-7){
+            res.data[pivotRow][c] = 0;
+            continue;
+        }
         //swap row with the row containing the largest pivot element
         std::swap(res.data[r], res.data[pivotRow]);
         //scale it to 1
@@ -266,7 +271,13 @@ Matrix rref() const {
         for (int k = 0; k < rows; ++k) {
             if (k != r) {//skip the current pivot row itself
                 double factor = res.data[k][c];
-                for (int j = c; j < cols; ++j) res.data[k][j] -= factor * res.data[r][j];
+                for (int j = c; j < cols; ++j){
+                    res.data[k][j] -= factor * res.data[r][j];
+
+                    if(std::abs(res.data[k][j]) < 1e-7){
+                        res.data[k][j] = 0;
+                    }
+                }
             }
         }
         r++;
@@ -301,7 +312,7 @@ vector<Matrix> kernel() const {
     vector<int> pivotRows(cols, -1);
     int currentRow = 0;
     for (int c = 0; c < cols && currentRow < rows; ++c) {
-        if (std::abs(rref.data[currentRow][c] - 1.0) < 1e-12) {
+        if (std::abs(rref.data[currentRow][c]) > 1e-7) {
             pivotRows[c] = currentRow;
             currentRow++;
         }
@@ -325,8 +336,50 @@ vector<Matrix> kernel() const {
     return basis;
 }
 
+Matrix subtractLambdaI(double lambda) const{
+    Matrix result = *this;
+    for(int i = 0; i < std::min(rows, cols); ++i){
+        result.data[i][i] -= lambda;
+    }
+    return result;
+}
+Matrix gramSchmidt() const{
+    Matrix Q(rows, cols);
+    for(int j = 0; j < cols; ++j){
+        // Extract the current column vector (v_j) from the original matrix
+        vector<double> v(rows);
+        for(int i = 0; i < rows; ++i) v[i] = data[i][j];
+        //Orthogonalization: Substract projections of v_j onto all previous vectors Q_i
+        // This ensures the new vector is perpendicular to all already processed columns
+        for(int i = 0; i < j; ++i){
+            //Calculate the scalar product of Q_i and the current column
+            double dot = 0;
+            for(int k = 0; k < rows; ++k) dot += Q.data[k][i] * data[k][j];
+            //Subtract the projection: v = v - (proj_Qi(v_j))
+            for(int k = 0; k < rows; ++k) v[k] -= dot * Q.data[k][i];
+        }
+        //Scale vector to have a length of 1
+        double norm = 0;
+        for(double x : v) norm += x*x;
+        norm = sqrt(norm);
+        //Check if it is a null vector
+        if(norm > 1e-12){
+            for(int i = 0; i < rows; ++i) Q.data[i][j] = v[i] / norm;
+        }else{
+            // If the vector is linearly independent, it becomes a zero column
+            for(int i = 0; i < rows; ++i){
+                Q.data[i][j] = 0;
+            }
+        }
+    }
+    return Q;
+}
+
+
+
+
     void print() const {
-        cout << "\n" << rows << "x" << cols << "):" << endl;
+        cout << "\n(" << rows << "x" << cols << "):" << endl;
         for(int i = 0; i < rows; ++i){
             for(int j = 0; j < cols; ++j){
                 if(std::abs(data[i][j]) < 1e-12){
@@ -351,19 +404,93 @@ vector<Matrix> kernel() const {
         cout << endl;
     }
 
+    struct QRResult;
+    QRResult qr_decomposition() const;
+    vector<double> eigenvalues(int iterations = 5000) const;
+    vector<vector<Matrix>> eigenvectors(const vector<double>& evals) const;
+
 
 };
 
-    Matrix create_matrix() {
-        int r, c;
-        cout << "How many rows? "; std::cin >> r;
-        cout << "How many columns? "; std::cin >> c;
+struct Matrix::QRResult{
+    Matrix Q;
+    Matrix R;
+    }; 
 
-        Matrix m(r, c);
-        m.fill_user_matrix();
-        return m;
+Matrix::QRResult Matrix::qr_decomposition() const {
+    Matrix Q = this->gramSchmidt();
+    // A = QR => R = Q^T * A (because Q is orthogonal)
+    Matrix QT = Q.transpose();
+    Matrix R = QT * (*this);
+    return {Q, R};
+    }
+
+
+vector<double> Matrix::eigenvalues(int iterations) const{
+    Matrix A = *this;
+    for(int i = 0; i < iterations; ++i){
+        //each step makes the result more diagonal
+        //the off-diagonal elements get smaller and the eigenvalues emerge on the diagonal
+        //Decompose A into Q (orthogonal) and R (Upper triangular)
+        // A = Q * R
+        Matrix::QRResult qr = A.qr_decomposition();
+        //Reassemble Matrix in reverse oder: A = R * Q
+        // that is the same as A = Q^T * A * Q
+        // Similarity transformations preserve the eigenvalues of a matrix
+        A = qr.R * qr.Q;
+    }
+    vector<double> evals;
+    for (int i = 0; i < rows; ++i){
+        // get the eigenvalues from the diagonal
+        evals.push_back(A.data[i][i]);
+    }
+    return evals;
+}
+
+vector<vector<Matrix>> Matrix::eigenvectors(const vector<double>& evals) const {
+    //return a vector of vectors:
+    //each entry in the outer vector corresponds to one eigenvalues
+    // The inner vector contains the eigenvectors for that eigenvalue
+    vector<vector<Matrix>> all_eigenspaces;
+
+    for(double lambda : evals){
+        //A - lambda * I
+        Matrix shifted = this->subtractLambdaI(lambda);
+        //eigenspace is the kernel of (A - lambda * I)
+        vector<Matrix> eigenspace = shifted.kernel();
+        all_eigenspaces.push_back(eigenspace);
 
     }
+    return all_eigenspaces;
+}
+
+vector<double> get_unique_eigenvalues(vector<double> evals) {
+    if (evals.empty()) return evals;
+
+    // sort (necessary for unique)
+    std::sort(evals.begin(), evals.end());
+
+    // eliminate duplicates
+    auto it = std::unique(evals.begin(), evals.end(), [](double a, double b) {
+        return std::abs(a - b) < 1e-4; 
+    });
+
+    evals.erase(it, evals.end()); // cut off trash
+    return evals;
+}
+
+
+Matrix create_matrix() {
+    int r, c;
+    cout << "How many rows? "; std::cin >> r;
+    cout << "How many columns? "; std::cin >> c;
+
+    Matrix m(r, c);
+    m.fill_user_matrix();
+    return m;
+
+}
+
 
 
 int main(){
@@ -378,122 +505,178 @@ int main(){
     cout << "7. Transpose" << endl;
     cout << "8. Inverse" << endl;
     cout << "9. Rank, Basis and Kernel" << endl;
-    cout << "End Program" << endl;
+    cout << "10. QR decomposition" << endl;
+    cout << "11. Eigen-Analysis" << endl;
+    cout << "0. End Program" << endl;
     cout << "Your choice? ";
     std::cin >> choice;
 
-    switch (choice) {
-        case 1: {
-            cout << "\ndata for matrix a: " << endl;
-            Matrix a = create_matrix();
-            cout << "\ndata for matrix b: " << endl;
-            Matrix b = create_matrix();
+    if(choice == 0) return 0;
 
-            Matrix res = a + b;
-            res.print();
-            break;
-        }
-        case 2: {
-            cout << "\ndata for matrix a: " << endl;
-            Matrix a = create_matrix();
-            cout << "\ndata for matrix b: " << endl;
-            Matrix b = create_matrix();
+    try{
+        switch (choice) {
+            case 1: {
+                cout << "\ndata for matrix a: " << endl;
+                Matrix a = create_matrix();
+                cout << "\ndata for matrix b: " << endl;
+                Matrix b = create_matrix();
 
-            Matrix res = a - b;
-            res.print();
-            break;
+                Matrix res = a + b;
+                res.print();
+                break;
+            }
+            case 2: {
+                cout << "\ndata for matrix a: " << endl;
+                Matrix a = create_matrix();
+                cout << "\ndata for matrix b: " << endl;
+                Matrix b = create_matrix();
 
-        }
-        case 3: {
-            cout << "\ndata for matrix: " << endl;
-            Matrix a = create_matrix();
-            cout << "determinant is: " << a.determinant() << endl;
-            break;
+                Matrix res = a - b;
+                res.print();
+                break;
 
-        }
-        case 4:{
-            cout << "\ndata for matrix: " << endl;
-            Matrix a = create_matrix();
-            Matrix result = a.gauss();
-            result.print();
-            break;
-        }
-        case 5: {
-            cout << "Multiplication with second matrix/vector (1) or one number (2)?" << endl;
-            int v_choice;
-            cout << "Your choice?" << endl;
-            std::cin >> v_choice;
-            switch (v_choice){
-                case 1: { 
-                    cout << "\ndata for matrix a: " << endl;
-                    Matrix a = create_matrix();
-                    cout << "\ndata for matrix b: " << endl;
-                    Matrix b = create_matrix();
-                    Matrix result = a * b;
-                    result.print();
-                    break;
-                }
-                case 2: {
-                    cout << "\ndata for matrix a: " << endl;
-                    Matrix a = create_matrix();
-                    double number_m;
-                    cout << "\nNumber to multiply matrix with?" << endl;
-                    std::cin >> number_m;
-                    Matrix result = a * number_m;
-                    result.print();
-                    break;
+            }
+            case 3: {
+                cout << "\ndata for matrix: " << endl;
+                Matrix a = create_matrix();
+                cout << "determinant is: " << a.determinant() << endl;
+                break;
+
+            }
+            case 4:{
+                cout << "\ndata for matrix: " << endl;
+                Matrix a = create_matrix();
+                Matrix result = a.gauss();
+                result.print();
+                break;
+            }
+            case 5: {
+                cout << "Multiplication with second matrix/vector (1) or one number (2)?" << endl;
+                int v_choice;
+                cout << "Your choice?" << endl;
+                std::cin >> v_choice;
+                switch (v_choice){
+                    case 1: { 
+                        cout << "\ndata for matrix a: " << endl;
+                        Matrix a = create_matrix();
+                        cout << "\ndata for matrix b: " << endl;
+                        Matrix b = create_matrix();
+                        Matrix result = a * b;
+                        result.print();
+                        break;
+                    }
+                    case 2: {
+                        cout << "\ndata for matrix a: " << endl;
+                        Matrix a = create_matrix();
+                        double number_m;
+                        cout << "\nNumber to multiply matrix with?" << endl;
+                        std::cin >> number_m;
+                        Matrix result = a * number_m;
+                        result.print();
+                        break;
+                    }
                 }
             }
-        }
-        case 6:{
-            cout << "\ndata for matrix: " << endl;
-            Matrix a = create_matrix();
-            cout << "What is the exponent?" << endl;
-            int exp;
-            std::cin >> exp;
-            Matrix result = a.pow(exp);
-            result.print();
+            case 6:{
+                cout << "\ndata for matrix: " << endl;
+                Matrix a = create_matrix();
+                cout << "What is the exponent?" << endl;
+                int exp;
+                std::cin >> exp;
+                Matrix result = a.pow(exp);
+                result.print();
 
-        }
-        case 7: {
-            cout << "\ndata for matrix: " << endl;
-            ((create_matrix()).transpose()).print();
-            break;
-        }
-        case 8:{
-            cout << "\ndata for matrix: " << endl;
-            ((create_matrix()).inverse()).print();
-            break;
-        }
-        case 9: {
-            cout << "\ndata for matrix: " << endl;
-            Matrix a = create_matrix();
-            vector<Matrix> basis = a.basis();
-            int rank = basis.size();
-            cout << "Rank: " << rank << endl << endl;
-            if(rank == 0){
-                cout << "The basis is empty (Zero matrix)." << endl;
-            } else{
-                cout << "Basis: " << endl << endl;
-                for(int i = 0; i < rank; ++i){
-                    cout << "Vector " << (i + 1) << ":";
-                    basis[i].print();// matrix printing method
-                }
             }
-            vector<Matrix> kernel = a.kernel();
-            if(kernel.size() == 0){
-                cout << "The matrix does not have any vectors that always result in zero => no kernel!" << endl;
-            }else{
-                cout << "Kernel is: " << endl << endl;
-                for(size_t i = 0; i < kernel.size(); ++i){
-                    cout << "Vector " << (i + 1) << endl;
-                    kernel[i].print();
-                }
+            case 7: {
+                cout << "\ndata for matrix: " << endl;
+                ((create_matrix()).transpose()).print();
+                break;
             }
-            
+            case 8:{
+                cout << "\ndata for matrix: " << endl;
+                ((create_matrix()).inverse()).print();
+                break;
+            }
+            case 9: {
+                cout << "\ndata for matrix: " << endl;
+                Matrix a = create_matrix();
+                vector<Matrix> basis = a.basis();
+                int rank = basis.size();
+                cout << "Rank: " << rank << endl << endl;
+                if(rank == 0){
+                    cout << "The basis is empty (Zero matrix)." << endl;
+                } else{
+                    cout << "Basis: " << endl << endl;
+                    for(int i = 0; i < rank; ++i){
+                        cout << "Vector " << (i + 1) << ":";
+                        basis[i].print();// matrix printing method
+                    }
+                }
+                vector<Matrix> kernel = a.kernel();
+                if(kernel.size() == 0){
+                    cout << "The matrix does not have any vectors that always result in zero => no kernel!" << endl;
+                }else{
+                    cout << "Kernel is: " << endl << endl;
+                    for(size_t i = 0; i < kernel.size(); ++i){
+                        cout << "Vector " << (i + 1) << endl;
+                        kernel[i].print();
+                    }
+                }
+                
+            }
+            case 10: {
+                cout << "\nData for matrix to decompose: " << endl;
+                Matrix a = create_matrix();
+                
+                Matrix::QRResult res = a.qr_decomposition();
+                
+                cout << "--- Orthogonal Matrix Q ---";
+                res.Q.print();
+                
+                cout << "--- Upper Triangular Matrix R ---";
+                res.R.print();
+                break;
+            }
+
+            case 11: { // Full Eigen-Analysis
+                cout << "\nData for matrix: " << endl;
+                Matrix a = create_matrix();
+
+                // 1. Calculate raw eigenvalues
+                vector<double> raw_evals = a.eigenvalues();
+                
+                // 2. Clean up duplicates (using the unique function we discussed)
+                vector<double> unique_evals = get_unique_eigenvalues(raw_evals);
+
+                cout << "\n--- EIGEN-ANALYSIS RESULTS ---" << endl;
+                
+                // 3. Get Eigenspaces for these unique values
+                vector<vector<Matrix>> spaces = a.eigenvectors(unique_evals);
+
+                for (size_t i = 0; i < unique_evals.size(); ++i) {
+                    cout << "------------------------------------------" << endl;
+                    cout << "Eigenvalue (lambda_" << i + 1 << "): " << unique_evals[i] << endl;
+                    
+                    if (spaces[i].empty()) {
+                        cout << "Basis of Eigenspace: No vectors found (check for complex values)." << endl;
+                    } else {
+                        cout << "Basis of Eigenspace (Eigenvectors): " << endl;
+                        for (size_t v = 0; v < spaces[i].size(); ++v) {
+                            cout << "Vector " << v + 1 << ":";
+                            spaces[i][v].print();
+                        }
+                    }
+                }
+                break;
+            }
+            default:
+                cout << "Invalid choice or program ended." << endl;
+                break;
         }
-        default:
-            cout << "Invalid choice or program ended." << endl;
-            break;
     }
+    catch (const std::exception& e){
+    //catches all throw messages from zhe matrix methods
+    cout << "\nMathematical Error: " << e.what() << endl;
+    cout << "Please try again with valid dimensions or values." << endl;
+    }   
 }
