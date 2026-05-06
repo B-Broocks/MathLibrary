@@ -45,7 +45,7 @@ Build/
 build-*/
 
 # CMake generated files
-/CMakeFiles
+CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 install_manifest.txt
