@@ -1,4 +1,4 @@
 # MathLibrary
 Some projects where i implement math concepts (c++ or python) 
 
-the jnf.py takes a matrix and its eigenvalues as an input
+jnf.py is a solution that rewarded a bonus point for math course in university 
